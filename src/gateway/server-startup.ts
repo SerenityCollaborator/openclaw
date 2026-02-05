@@ -15,6 +15,7 @@ import {
   triggerInternalHook,
 } from "../hooks/internal-hooks.js";
 import { loadInternalHooks } from "../hooks/loader.js";
+import { onAgentEvent } from "../infra/agent-events.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
@@ -110,6 +111,116 @@ export async function startGatewaySidecars(params: {
     }
   } catch (err) {
     params.logHooks.error(`failed to load hooks: ${String(err)}`);
+  }
+
+  // Bridge agent events (messages, tool calls, tool results) to the internal hook system
+  // so hooks registered for "activity" events receive them.
+  if (params.cfg.hooks?.internal?.enabled) {
+    // Track the latest assistant text per run so we can emit a single message
+    // event when the run ends or a tool starts (i.e. assistant turn is complete).
+    const assistantBuffer = new Map<string, { text: string; sessionKey: string; ts: number }>();
+
+    const flushAssistant = (runId: string) => {
+      const buf = assistantBuffer.get(runId);
+      if (!buf || !buf.text.trim()) return;
+      assistantBuffer.delete(runId);
+      void triggerInternalHook(
+        createInternalHookEvent("activity", "message", buf.sessionKey, {
+          sessionKey: buf.sessionKey,
+          runId,
+          role: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: buf.text }],
+            timestamp: buf.ts,
+          },
+        }),
+      );
+    };
+
+    onAgentEvent((evt) => {
+      const data = evt.data ?? {};
+      const sessionKey = evt.sessionKey ?? "";
+
+      if (evt.stream === "assistant" && data.text) {
+        // Buffer the latest accumulated text; don't emit yet (deltas are frequent).
+        assistantBuffer.set(evt.runId, {
+          text: data.text as string,
+          sessionKey,
+          ts: evt.ts,
+        });
+        return;
+      }
+
+      if (evt.stream === "tool") {
+        const phase = data.phase as string | undefined;
+
+        if (phase === "start") {
+          // A tool call means the assistant turn before it is complete.
+          flushAssistant(evt.runId);
+
+          void triggerInternalHook(
+            createInternalHookEvent("activity", "tool_call", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              role: "assistant",
+              toolName: data.name,
+              toolCallId: data.toolCallId,
+              message: {
+                role: "assistant",
+                content: [
+                  {
+                    type: "toolCall",
+                    id: data.toolCallId,
+                    name: data.name,
+                    arguments: data.args,
+                  },
+                ],
+                timestamp: evt.ts,
+              },
+            }),
+          );
+        } else if (phase === "result") {
+          void triggerInternalHook(
+            createInternalHookEvent("activity", "tool_result", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              role: "toolResult",
+              toolName: data.name,
+              toolCallId: data.toolCallId,
+              message: {
+                role: "toolResult",
+                toolCallId: data.toolCallId,
+                toolName: data.name,
+                isError: data.isError,
+                content: data.result
+                  ? [
+                      {
+                        type: "text",
+                        text:
+                          typeof data.result === "string"
+                            ? data.result
+                            : JSON.stringify(data.result),
+                      },
+                    ]
+                  : [],
+                details: { status: data.isError ? "error" : "completed" },
+                timestamp: evt.ts,
+              },
+            }),
+          );
+        }
+        return;
+      }
+
+      if (evt.stream === "lifecycle") {
+        const phase = data.phase as string | undefined;
+        if (phase === "end" || phase === "error") {
+          // Agent run is done — flush any buffered assistant text.
+          flushAssistant(evt.runId);
+        }
+      }
+    });
   }
 
   // Launch configured channels so gateway replies via the surface the message came from.

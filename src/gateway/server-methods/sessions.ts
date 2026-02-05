@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { GatewayRequestHandlers } from "./types.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
 import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
@@ -358,6 +359,17 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           // Best-effort.
         }
       }
+    }
+
+    // Fire session:end hook for the deleted session
+    if (existed && sessionId) {
+      void triggerInternalHook(
+        createInternalHookEvent("session", "end", target.canonicalKey, {
+          sessionId,
+          reason: "deleted",
+          agentId: target.agentId,
+        }),
+      ).catch(() => {});
     }
 
     respond(true, { ok: true, key: target.canonicalKey, deleted: existed, archived }, undefined);

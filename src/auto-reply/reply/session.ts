@@ -7,6 +7,8 @@ import type { TtsAutoMode } from "../../config/types.tts.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   DEFAULT_RESET_TRIGGERS,
   deriveSessionMetaPatch,
@@ -351,6 +353,61 @@ export async function initSessionState(params: {
     // Preserve per-session overrides while resetting compaction state on /new.
     store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
   });
+
+  // Trigger session lifecycle hooks for new sessions.
+  // Fire both internal hooks (HOOK.md-based) and plugin hooks.
+  // These fire asynchronously and errors are caught to avoid disrupting the
+  // session initialization flow.
+  if (isNewSession) {
+    const hookRunner = getGlobalHookRunner();
+
+    // If we're replacing a previous session (reset/expired), fire session:end first
+    if (previousSessionEntry) {
+      void triggerInternalHook(
+        createInternalHookEvent("session", "end", sessionKey, {
+          sessionId: previousSessionEntry.sessionId,
+          reason: resetTriggered ? "reset" : "expired",
+          agentId,
+        }),
+      ).catch(() => {});
+
+      if (hookRunner?.hasHooks("session_end")) {
+        void hookRunner
+          .runSessionEnd(
+            {
+              sessionId: previousSessionEntry.sessionId,
+              messageCount: 0, // Not tracked at session init time
+            },
+            { agentId, sessionId: previousSessionEntry.sessionId },
+          )
+          .catch(() => {});
+      }
+    }
+
+    // Fire session:start for the new session
+    void triggerInternalHook(
+      createInternalHookEvent("session", "start", sessionKey, {
+        sessionId,
+        agentId,
+        isGroup,
+        resetTriggered,
+        chatType: sessionEntry.chatType,
+        channel: sessionEntry.lastChannel,
+      }),
+    ).catch(() => {});
+
+    if (hookRunner?.hasHooks("session_start")) {
+      void hookRunner
+        .runSessionStart(
+          {
+            sessionId: sessionId ?? "",
+            resumedFrom: previousSessionEntry?.sessionId,
+          },
+          { agentId, sessionId: sessionId ?? "" },
+        )
+        .catch(() => {});
+    }
+  }
 
   const sessionCtx: TemplateContext = {
     ...ctx,

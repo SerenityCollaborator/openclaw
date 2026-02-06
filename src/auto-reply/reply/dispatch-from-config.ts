@@ -5,6 +5,7 @@ import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
   logMessageProcessed,
@@ -195,6 +196,41 @@ export async function dispatchReplyFromConfig(params: {
       .catch((err) => {
         logVerbose(`dispatch-from-config: message_received hook failed: ${String(err)}`);
       });
+  }
+
+  // Emit user message to internal hook system (activity.user_message)
+  // This enables event hooks (like serenity-event-hook) to capture inbound messages.
+  {
+    const userMessageContent =
+      typeof ctx.BodyForCommands === "string"
+        ? ctx.BodyForCommands
+        : typeof ctx.RawBody === "string"
+          ? ctx.RawBody
+          : typeof ctx.Body === "string"
+            ? ctx.Body
+            : "";
+    const userMessageId =
+      ctx.MessageSidFull ?? ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
+    const userMessageTs =
+      typeof ctx.Timestamp === "number" && Number.isFinite(ctx.Timestamp)
+        ? ctx.Timestamp
+        : Date.now();
+
+    void triggerInternalHook(
+      createInternalHookEvent("activity" as "command", "user_message", sessionKey ?? "", {
+        sessionKey,
+        role: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: userMessageContent }],
+          timestamp: userMessageTs,
+        },
+        senderId: ctx.SenderId,
+        senderName: ctx.SenderName ?? ctx.SenderUsername,
+        channel: ctx.OriginatingChannel ?? ctx.Surface ?? ctx.Provider,
+        messageId: userMessageId,
+      }),
+    ).catch(() => {});
   }
 
   // Check if we should route replies to originating channel instead of dispatcher.

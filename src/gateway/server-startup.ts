@@ -121,7 +121,9 @@ export async function startGatewaySidecars(params: {
 
     const flushAssistant = (runId: string) => {
       const buf = assistantBuffer.get(runId);
-      if (!buf || !buf.text.trim()) return;
+      if (!buf || !buf.text.trim()) {
+        return;
+      }
       assistantBuffer.delete(runId);
       void triggerInternalHook(
         createInternalHookEvent("activity", "message", buf.sessionKey, {

@@ -217,7 +217,8 @@ export async function dispatchReplyFromConfig(params: {
         : Date.now();
 
     void triggerInternalHook(
-      createInternalHookEvent("activity" as "command", "user_message", sessionKey ?? "", {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createInternalHookEvent("activity" as any, "user_message", sessionKey ?? "", {
         sessionKey,
         role: "user",
         message: {

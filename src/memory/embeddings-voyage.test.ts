@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../agents/model-auth.js", () => ({
   resolveApiKeyForProvider: vi.fn(),
   requireApiKey: (auth: { apiKey?: string; mode?: string }, provider: string) => {
-    if (auth?.apiKey) return auth.apiKey;
+    if (auth?.apiKey) {
+      return auth.apiKey;
+    }
     throw new Error(`No API key resolved for provider "${provider}" (auth mode: ${auth?.mode}).`);
   },
 }));
@@ -59,6 +61,7 @@ describe("voyage embedding provider", () => {
     expect(body).toEqual({
       model: "voyage-4-large",
       input: ["test query"],
+      input_type: "query",
     });
   });
 
@@ -88,6 +91,43 @@ describe("voyage embedding provider", () => {
     const headers = (init?.headers ?? {}) as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer remote-override-key");
     expect(headers["X-Custom"]).toBe("123");
+  });
+
+  it("passes input_type=document for embedBatch", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{ embedding: [0.1, 0.2] }, { embedding: [0.3, 0.4] }],
+      }),
+    })) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { createVoyageEmbeddingProvider } = await import("./embeddings-voyage.js");
+    const authModule = await import("../agents/model-auth.js");
+
+    vi.mocked(authModule.resolveApiKeyForProvider).mockResolvedValue({
+      apiKey: "voyage-key-123",
+      mode: "api-key",
+      source: "test",
+    });
+
+    const result = await createVoyageEmbeddingProvider({
+      config: {} as never,
+      provider: "voyage",
+      model: "voyage-4-large",
+      fallback: "none",
+    });
+
+    await result.provider.embedBatch(["doc1", "doc2"]);
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(init?.body as string);
+    expect(body).toEqual({
+      model: "voyage-4-large",
+      input: ["doc1", "doc2"],
+      input_type: "document",
+    });
   });
 
   it("normalizes model names", async () => {

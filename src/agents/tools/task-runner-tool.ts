@@ -97,6 +97,7 @@ ACTIONS:
 NOTES:
 - Logs are stored at ~/.task-runner/logs/{id}.log
 - Tasks survive gateway restarts (detached). After a restart, task_write may not work.
+- Prefer this over exec for dev servers, watchers, build processes, and anything that should outlive the current session.
 `,
     parameters: TaskRunnerToolSchema,
     execute: async (_toolCallId, args) => {

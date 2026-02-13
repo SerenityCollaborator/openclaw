@@ -12,6 +12,7 @@ import {
 
 const TASK_RUNNER_ACTIONS = [
   "task_start",
+  "task_restart",
   "task_stop",
   "task_signal",
   "task_status",
@@ -84,7 +85,8 @@ export function createTaskRunnerTool(): AnyAgentTool {
     description: `Manage long-running background tasks that persist across gateway restarts.
 
 ACTIONS:
-- task_start: Start a new task (detached) and persist it to disk.
+- task_start: Start a new task (detached) and persist it to disk. If a task with the same id exists in a terminal state, it will be auto-replaced.
+- task_restart: Restart an existing task id (stop if running, remove old record/files, then start again). Supports optional overrides for command/args/cwd/env/tags.
 - task_stop: Stop a task (SIGTERM then SIGKILL).
 - task_signal: Send a signal to a task's process group.
 - task_status: Get current status + uptime.
@@ -113,6 +115,23 @@ NOTES:
           const tags = readStringArrayParam(params, "tags", { allowEmpty: true });
           const env = readEnvObject(params);
           return jsonResult(await svc.start({ id, command, args: argsList, cwd, env, tags }));
+        }
+        case "task_restart": {
+          const id = readStringParam(params, "id", { required: true });
+          const command = readStringParam(params, "command");
+          const cwd = readStringParam(params, "cwd");
+          const argsList = readStringArrayParam(params, "args", { allowEmpty: true });
+          const tags = readStringArrayParam(params, "tags", { allowEmpty: true });
+          const env = readEnvObject(params);
+          return jsonResult(
+            await svc.restart(id, {
+              command,
+              args: argsList,
+              cwd,
+              env,
+              tags,
+            }),
+          );
         }
         case "task_stop": {
           const id = readStringParam(params, "id", { required: true });

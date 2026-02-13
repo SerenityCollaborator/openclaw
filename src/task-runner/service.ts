@@ -218,6 +218,42 @@ export class TaskRunnerService {
     return state.tasks[id];
   }
 
+  private isTerminalStatus(status: TaskStatus) {
+    return (
+      status === "stopped" ||
+      status === "failed" ||
+      status === "killed" ||
+      status === "timeout" ||
+      status === "lost"
+    );
+  }
+
+  private async cleanupTaskFiles(task: TaskRecord) {
+    try {
+      await fsp.unlink(task.logPath);
+    } catch {
+      // ignore
+    }
+    if (task.pidPath) {
+      try {
+        await fsp.unlink(task.pidPath);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private async removeTaskRecord(id: string) {
+    const state = this.requireState();
+    const task = state.tasks[id];
+    if (!task) {
+      return;
+    }
+    delete state.tasks[id];
+    this.children.delete(id);
+    await this.cleanupTaskFiles(task);
+  }
+
   async start(req: TaskStartRequest): Promise<{ id: string; pid: number; status: TaskStatus }> {
     await this.init();
     this.assertCwdAllowed(req.cwd);
@@ -231,8 +267,14 @@ export class TaskRunnerService {
 
     const id = (req.id ?? "").trim() || randomUUID();
     const state = this.requireState();
-    if (state.tasks[id]) {
-      throw new Error(`Task already exists: ${id}`);
+    const existing = state.tasks[id];
+    if (existing) {
+      if (this.isTerminalStatus(existing.status)) {
+        // Auto-replace terminal tasks with the same id.
+        await this.removeTaskRecord(id);
+      } else {
+        throw new Error(`Task already exists: ${id}`);
+      }
     }
 
     const createdAt = now();
@@ -412,6 +454,39 @@ export class TaskRunnerService {
     return { id: task.id, pid: task.pid, status: task.status };
   }
 
+  async restart(
+    id: string,
+    overrides?: Partial<Pick<TaskRecord, "command" | "args" | "cwd" | "env" | "tags">>,
+  ) {
+    await this.init();
+
+    const state = this.requireState();
+    const task = state.tasks[id];
+    if (!task) {
+      throw new Error(`Task not found: ${id}`);
+    }
+
+    // Stop if still running/pending.
+    if ((task.status === "running" || task.status === "pending") && typeof task.pid === "number") {
+      await this.stop(id);
+    }
+
+    const next = {
+      id,
+      command: overrides?.command ?? task.command,
+      args: overrides?.args ?? task.args,
+      cwd: overrides?.cwd ?? task.cwd,
+      env: overrides?.env ?? task.env,
+      tags: overrides?.tags ?? task.tags,
+    } satisfies TaskStartRequest;
+
+    // Remove old record and files so we can reuse the same id.
+    await this.removeTaskRecord(id);
+    await this.persist();
+
+    return await this.start(next);
+  }
+
   async write(id: string, data: string) {
     await this.init();
     const task = this.get(id);
@@ -540,7 +615,10 @@ export class TaskRunnerService {
     const state = this.requireState();
     const olderThanMs =
       typeof params?.olderThanMs === "number" ? params.olderThanMs : 24 * 60 * 60 * 1000;
-    const cutoff = now() - Math.max(0, olderThanMs);
+
+    // Edge case: when olderThanMs is 0, callers typically mean "prune everything",
+    // but `cutoff = now()` can race with tasks ending in the same millisecond.
+    const cutoff = olderThanMs <= 0 ? Number.POSITIVE_INFINITY : now() - Math.max(0, olderThanMs);
 
     let removed = 0;
     for (const [id, task] of Object.entries(state.tasks)) {

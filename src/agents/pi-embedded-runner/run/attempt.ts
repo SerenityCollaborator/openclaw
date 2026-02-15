@@ -475,6 +475,10 @@ export async function runEmbeddedAttempt(
 
     let sessionManager: ReturnType<typeof guardSessionManager> | undefined;
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+    // Declare session outcome variables at block scope so they're accessible in finally
+    let aborted = false;
+    let timedOut = false;
+    let promptError: unknown = null;
     try {
       await repairSessionFileIfNeeded({
         sessionFile: params.sessionFile,
@@ -676,8 +680,7 @@ export async function runEmbeddedAttempt(
         throw err;
       }
 
-      let aborted = Boolean(params.abortSignal?.aborted);
-      let timedOut = false;
+      aborted = Boolean(params.abortSignal?.aborted);
       const getAbortReason = (signal: AbortSignal): unknown =>
         "reason" in signal ? (signal as { reason?: unknown }).reason : undefined;
       const makeTimeoutAbortReason = (): Error => {
@@ -823,7 +826,6 @@ export async function runEmbeddedAttempt(
               config: params.config,
             }).sessionAgentId;
 
-      let promptError: unknown = null;
       try {
         const promptStartedAt = Date.now();
 
@@ -1066,6 +1068,22 @@ export async function runEmbeddedAttempt(
         agent: session?.agent,
         sessionManager,
       });
+
+      // Fire session:end for subagent sessions (matches session:start emitted earlier)
+      const sessionEndReason = promptError ? "errored" : aborted ? "aborted" : "completed";
+      void triggerInternalHook(
+        createInternalHookEvent("session", "end", params.sessionKey ?? params.sessionId, {
+          sessionId: params.sessionId,
+          agentId: sessionAgentId,
+          channel: params.messageChannel ?? params.messageProvider,
+          model: params.modelId,
+          spawnedBy: params.spawnedBy ?? undefined,
+          reason: sessionEndReason,
+          timedOut,
+          error: promptError ? describeUnknownError(promptError) : undefined,
+        }),
+      ).catch(() => {});
+
       session?.dispose();
       await sessionLock.release();
     }

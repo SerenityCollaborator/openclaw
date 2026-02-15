@@ -221,6 +221,56 @@ export async function startGatewaySidecars(params: {
           // Agent run is done — flush any buffered assistant text.
           flushAssistant(evt.runId);
         }
+
+        // Bridge lifecycle events to internal hooks
+        if (phase === "start") {
+          void triggerInternalHook(
+            createInternalHookEvent("lifecycle", "start", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              startedAt: data.startedAt,
+            }),
+          );
+        } else if (phase === "end") {
+          void triggerInternalHook(
+            createInternalHookEvent("lifecycle", "end", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              endedAt: data.endedAt,
+            }),
+          );
+        } else if (phase === "error") {
+          void triggerInternalHook(
+            createInternalHookEvent("lifecycle", "error", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              error: data.error,
+            }),
+          );
+        }
+        return;
+      }
+
+      // Bridge compaction events to internal hooks
+      if (evt.stream === "compaction") {
+        const phase = data.phase as string | undefined;
+        if (phase === "start") {
+          void triggerInternalHook(
+            createInternalHookEvent("compaction", "start", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+            }),
+          );
+        } else if (phase === "end") {
+          void triggerInternalHook(
+            createInternalHookEvent("compaction", "end", sessionKey, {
+              sessionKey,
+              runId: evt.runId,
+              willRetry: data.willRetry,
+            }),
+          );
+        }
+        return;
       }
     });
   }

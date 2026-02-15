@@ -8,7 +8,15 @@
 import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
 import type { OpenClawConfig } from "../config/config.js";
 
-export type InternalHookEventType = "command" | "session" | "agent" | "gateway";
+export type InternalHookEventType =
+  | "command"
+  | "session"
+  | "agent"
+  | "gateway"
+  | "activity"
+  | "lifecycle"
+  | "compaction"
+  | "cron";
 
 export type AgentBootstrapHookContext = {
   workspaceDir: string;

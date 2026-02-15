@@ -1,6 +1,7 @@
 import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
 import type { CronJob } from "../types.js";
 import type { CronEvent, CronServiceState } from "./state.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";
 import { resolveCronDeliveryPlan } from "../delivery.js";
 import { sweepCronRunSessions } from "../session-reaper.js";
@@ -595,5 +596,26 @@ export function emit(state: CronServiceState, evt: CronEvent) {
     state.deps.onEvent?.(evt);
   } catch {
     /* ignore */
+  }
+
+  // Bridge cron events to internal hooks
+  // Only emit for started/finished/removed actions (not added/updated)
+  if (evt.action === "started" || evt.action === "finished" || evt.action === "removed") {
+    const sessionKey = evt.sessionKey ?? `cron:${evt.jobId}`;
+    void triggerInternalHook(
+      createInternalHookEvent("cron", evt.action, sessionKey, {
+        jobId: evt.jobId,
+        sessionKey,
+        sessionId: evt.sessionId,
+        runAtMs: evt.runAtMs,
+        durationMs: evt.durationMs,
+        nextRunAtMs: evt.nextRunAtMs,
+        status: evt.status,
+        error: evt.error,
+        summary: evt.summary,
+      }),
+    ).catch(() => {
+      /* ignore hook errors */
+    });
   }
 }
